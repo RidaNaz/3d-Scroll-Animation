@@ -1,6 +1,6 @@
 'use client';
 
-import { motion, useMotionValueEvent, useScroll, useTransform } from 'framer-motion';
+import { easeInOut, motion, useMotionValueEvent, useScroll, useTransform } from 'framer-motion';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 const TOTAL_FRAMES = 41;
@@ -13,21 +13,18 @@ export default function ProductScrollScene() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imageRefs = useRef<Array<HTMLImageElement | null>>([]);
   const lastRenderedFrame = useRef(-1);
+  // Cached canvas geometry — resize logic no longer runs inside drawFrame.
+  const canvasSize = useRef({ width: 0, height: 0, dpr: 1 });
 
   const [imagesLoaded, setImagesLoaded] = useState(false);
   const [loadingProgress, setLoadingProgress] = useState(0);
   const [reducedMotion, setReducedMotion] = useState(false);
 
-  const drawFrame = useCallback((frameNumber: number) => {
+  // Only touches canvas.width/height (which forces a backing-store
+  // reallocation) — called on mount + actual resize events, never per-frame.
+  const resizeCanvas = useCallback(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
-
-    const index = Math.min(Math.max(Math.round(frameNumber), 0), TOTAL_FRAMES - 1);
-    const image = imageRefs.current[index];
-    if (!image) return;
-
-    const context = canvas.getContext('2d');
-    if (!context) return;
 
     const dpr = window.devicePixelRatio || 1;
     const width = Math.max(canvas.clientWidth || window.innerWidth, 1);
@@ -36,8 +33,29 @@ export default function ProductScrollScene() {
     canvas.width = Math.round(width * dpr);
     canvas.height = Math.round(height * dpr);
 
-    context.setTransform(1, 0, 0, 1, 0, 0);
-    context.scale(dpr, dpr);
+    const context = canvas.getContext('2d');
+    if (context) {
+      context.setTransform(1, 0, 0, 1, 0, 0);
+      context.scale(dpr, dpr);
+    }
+
+    canvasSize.current = { width, height, dpr };
+  }, []);
+
+  // Pure draw — no canvas.width/height writes here, so this is cheap
+  // enough to run on every scroll-driven frame change.
+  const drawFrame = useCallback((frameNumber: number) => {
+    const canvas = canvasRef.current;
+    const context = canvas?.getContext('2d');
+    if (!canvas || !context) return;
+
+    const index = Math.min(Math.max(Math.round(frameNumber), 0), TOTAL_FRAMES - 1);
+    const image = imageRefs.current[index];
+    if (!image) return;
+
+    const { width, height } = canvasSize.current;
+    if (width === 0 || height === 0) return;
+
     context.clearRect(0, 0, width, height);
 
     const imageRatio = image.naturalWidth / image.naturalHeight;
@@ -57,6 +75,7 @@ export default function ProductScrollScene() {
     const offsetY = (height - drawHeight) / 2;
 
     context.imageSmoothingEnabled = true;
+    context.imageSmoothingQuality = 'high';
     context.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
     lastRenderedFrame.current = index;
   }, []);
@@ -72,6 +91,9 @@ export default function ProductScrollScene() {
   }, []);
 
   useEffect(() => {
+    // Establish canvas geometry before any draw call can run.
+    resizeCanvas();
+
     if (reducedMotion) {
       drawFrame(0);
       return;
@@ -114,10 +136,12 @@ export default function ProductScrollScene() {
     return () => {
       isCancelled = true;
     };
-  }, [drawFrame, imagesLoaded, reducedMotion]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawFrame, imagesLoaded, reducedMotion, resizeCanvas]);
 
   useEffect(() => {
     const handleResize = () => {
+      resizeCanvas();
       if (!imagesLoaded && !reducedMotion) return;
       const latestFrame = lastRenderedFrame.current >= 0 ? lastRenderedFrame.current : 0;
       requestAnimationFrame(() => drawFrame(latestFrame));
@@ -126,13 +150,11 @@ export default function ProductScrollScene() {
     window.addEventListener('resize', handleResize);
     window.addEventListener('orientationchange', handleResize);
 
-    handleResize();
-
     return () => {
       window.removeEventListener('resize', handleResize);
       window.removeEventListener('orientationchange', handleResize);
     };
-  }, [drawFrame, imagesLoaded, reducedMotion]);
+  }, [drawFrame, imagesLoaded, reducedMotion, resizeCanvas]);
 
   const { scrollYProgress } = useScroll({
     target: containerRef,
@@ -150,23 +172,66 @@ export default function ProductScrollScene() {
     requestAnimationFrame(() => drawFrame(clampedIndex));
   });
 
-  const sectionOneOpacity = useTransform(scrollYProgress, [0, 0.08, 0.14, 0.22], [1, 1, 0.2, 0]);
-  const sectionOneY = useTransform(scrollYProgress, [0, 0.12, 0.22], [0, -12, 20]);
+  // Non-overlapping opacity windows: each section fully exits (→ 0) before
+  // the next one starts rising, with eased curves instead of linear fades.
+  // `easeInOut` here is Framer Motion's exported EasingFunction, not the
+  // string form — useTransform's `options.ease` requires a function.
+  const transformEase = { ease: easeInOut };
 
-  const sectionTwoOpacity = useTransform(scrollYProgress, [0.2, 0.28, 0.4, 0.58], [0, 1, 1, 0]);
-  const sectionTwoX = useTransform(scrollYProgress, [0.24, 0.42], [18, 0]);
+  const sectionOneOpacity = useTransform(
+    scrollYProgress,
+    [0, 0.14, 0.2],
+    [1, 1, 0],
+    transformEase,
+  );
+  const sectionOneY = useTransform(scrollYProgress, [0, 0.14, 0.2], [0, -8, 20], transformEase);
 
-  const sectionThreeOpacity = useTransform(scrollYProgress, [0.46, 0.62, 0.76, 0.9], [0, 1, 1, 0]);
-  const sectionThreeX = useTransform(scrollYProgress, [0.46, 0.68], [-24, 0]);
+  const sectionTwoOpacity = useTransform(
+    scrollYProgress,
+    [0.22, 0.28, 0.4, 0.46],
+    [0, 1, 1, 0],
+    transformEase,
+  );
+  const sectionTwoX = useTransform(scrollYProgress, [0.22, 0.3], [18, 0], transformEase);
 
-  const sectionFourOpacity = useTransform(scrollYProgress, [0.72, 0.82, 0.94, 1], [0, 1, 1, 0]);
-  const sectionFourY = useTransform(scrollYProgress, [0.78, 0.94], [10, 0]);
+  const sectionThreeOpacity = useTransform(
+    scrollYProgress,
+    [0.5, 0.56, 0.68, 0.74],
+    [0, 1, 1, 0],
+    transformEase,
+  );
+  const sectionThreeX = useTransform(scrollYProgress, [0.5, 0.58], [-24, 0], transformEase);
+
+  const sectionFourOpacity = useTransform(
+    scrollYProgress,
+    [0.8, 0.86, 1],
+    [0, 1, 1],
+    transformEase,
+  );
+  const sectionFourY = useTransform(scrollYProgress, [0.8, 0.9], [10, 0], transformEase);
 
   const scrollHintOpacity = useTransform(scrollYProgress, [0, 0.04, 0.12], [1, 0.5, 0]);
+  const progressBarScaleX = useTransform(scrollYProgress, [0, 1], [0, 1]);
 
   return (
     <div ref={containerRef} className="relative h-[400vh] bg-[#050505] text-white">
       <div className="sticky top-0 h-screen w-full overflow-hidden bg-[#050505]">
+        {/* Scroll progress indicator */}
+        <motion.div
+          className="pointer-events-none absolute inset-x-0 top-0 z-40 h-[2px] origin-left bg-white/70"
+          style={{ scaleX: progressBarScaleX }}
+        />
+
+        {/* Minimal nav */}
+        <nav className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-center justify-between px-6 py-5 sm:px-10">
+          <span className="text-xs font-medium uppercase tracking-[0.32em] text-white/50">
+            NOVA
+          </span>
+          <span className="text-xs font-medium uppercase tracking-[0.32em] text-white/30">
+            18 Pro Max
+          </span>
+        </nav>
+
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full object-contain" />
 
         <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(255,255,255,0.15),transparent_45%)]" />
@@ -184,7 +249,9 @@ export default function ProductScrollScene() {
           className="pointer-events-none absolute inset-y-0 left-0 flex items-center px-6 sm:px-12 md:px-20"
           style={{ opacity: sectionTwoOpacity, x: sectionTwoX }}
         >
-          <p className="max-w-sm text-left text-xl font-medium tracking-[-0.05em] text-white/90 sm:text-2xl md:text-4xl">
+          {/* Scrim so text stays legible regardless of what's behind it in the frame */}
+          <div className="pointer-events-none absolute inset-y-0 left-0 w-full max-w-md bg-gradient-to-r from-black/50 via-black/20 to-transparent md:max-w-xl" />
+          <p className="relative max-w-sm text-left text-xl font-medium tracking-[-0.05em] text-white/90 sm:text-2xl md:text-4xl">
             Precision in every layer.
           </p>
         </motion.div>
@@ -193,7 +260,8 @@ export default function ProductScrollScene() {
           className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-6 sm:px-12 md:px-20"
           style={{ opacity: sectionThreeOpacity, x: sectionThreeX }}
         >
-          <p className="max-w-sm text-right text-xl font-medium tracking-[-0.05em] text-white/90 sm:text-2xl md:text-4xl">
+          <div className="pointer-events-none absolute inset-y-0 right-0 w-full max-w-md bg-gradient-to-l from-black/50 via-black/20 to-transparent md:max-w-xl" />
+          <p className="relative max-w-sm text-right text-xl font-medium tracking-[-0.05em] text-white/90 sm:text-2xl md:text-4xl">
             See what&apos;s inside.
           </p>
         </motion.div>
