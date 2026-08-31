@@ -14,7 +14,7 @@ const TOTAL_FRAMES = 41;
 const FRAME_PATHS = Array.from(
     { length: TOTAL_FRAMES },
     (_, index) =>
-        `/nova/frame-${String(index + 1).padStart(3, '0')}.jpg`,
+        `/iphone/frame-${String(index + 1).padStart(3, '0')}.jpg`,
 );
 
 export default function ProductScrollScene() {
@@ -405,7 +405,7 @@ export default function ProductScrollScene() {
                 {/* Minimal navigation */}
                 <nav className="pointer-events-none absolute inset-x-0 top-0 z-30 flex items-center justify-between px-6 py-5 sm:px-10">
                     <span className="text-xs font-medium uppercase tracking-[0.32em] text-white/50">
-                        NOVA
+                        IPhone 18 pro max
                     </span>
 
                     <span className="text-xs font-medium uppercase tracking-[0.32em] text-white/30">
